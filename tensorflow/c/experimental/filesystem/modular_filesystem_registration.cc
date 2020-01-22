@@ -234,12 +234,21 @@ static std::unique_ptr<const T> CopyToCore(const T* plugin_ops,
 // Registers one filesystem from the plugin.
 //
 // Must be called only with `index` a valid index in `info->ops`.
-static Status RegisterFileSystem(const TF_FilesystemPluginInfo* info, int index) {
+static Status RegisterFileSystem(const TF_FilesystemPluginInfo* info,
+                                 int index) {
   // Step 1: Copy all the function tables to core TensorFlow memory space
-  auto core_filesystem_ops = CopyToCore<TF_FilesystemOps>(info->ops[index].filesystem_ops, info->ops[index].filesystem_ops_size);
-  auto core_random_access_file_ops = CopyToCore<TF_RandomAccessFileOps>(info->ops[index].random_access_file_ops, info->ops[index].random_access_file_ops_size);
-  auto core_writable_file_ops = CopyToCore<TF_WritableFileOps>(info->ops[index].writable_file_ops, info->ops[index].writable_file_ops_size);
-  auto core_read_only_memory_region_ops = CopyToCore<TF_ReadOnlyMemoryRegionOps>(info->ops[index].read_only_memory_region_ops, info->ops[index].read_only_memory_region_ops_size);
+  auto core_filesystem_ops = CopyToCore<TF_FilesystemOps>(
+      info->ops[index].filesystem_ops, info->ops[index].filesystem_ops_size);
+  auto core_random_access_file_ops = CopyToCore<TF_RandomAccessFileOps>(
+      info->ops[index].random_access_file_ops,
+      info->ops[index].random_access_file_ops_size);
+  auto core_writable_file_ops =
+      CopyToCore<TF_WritableFileOps>(info->ops[index].writable_file_ops,
+                                     info->ops[index].writable_file_ops_size);
+  auto core_read_only_memory_region_ops =
+      CopyToCore<TF_ReadOnlyMemoryRegionOps>(
+          info->ops[index].read_only_memory_region_ops,
+          info->ops[index].read_only_memory_region_ops_size);
 
   // Step 2: Initialize the opaque filesystem structure
   auto filesystem = tensorflow::MakeUnique<TF_Filesystem>();
@@ -251,7 +260,14 @@ static Status RegisterFileSystem(const TF_FilesystemPluginInfo* info, int index)
   if (!status.ok()) return status;
 
   // Step 3: Actual registration
-  return Env::Default()->RegisterFileSystem(info->ops[index].scheme, tensorflow::MakeUnique<tensorflow::ModularFileSystem>(std::move(filesystem), std::move(core_filesystem_ops), std::move(core_random_access_file_ops), std::move(core_writable_file_ops), std::move(core_read_only_memory_region_ops), info->plugin_memory_allocate, info->plugin_memory_free));
+  return Env::Default()->RegisterFileSystem(
+      info->ops[index].scheme,
+      tensorflow::MakeUnique<tensorflow::ModularFileSystem>(
+          std::move(filesystem), std::move(core_filesystem_ops),
+          std::move(core_random_access_file_ops),
+          std::move(core_writable_file_ops),
+          std::move(core_read_only_memory_region_ops),
+          info->plugin_memory_allocate, info->plugin_memory_free));
 }
 
 // Registers filesystem at `index`, if plugin is providing valid information.
@@ -271,12 +287,17 @@ static Status ValidateAndRegisterFilesystems(
 }
 
 // Ensures that the plugin provides the required memory management operations.
-static Status ValidatePluginMemoryRoutines(const TF_FilesystemPluginInfo* info) {
+static Status ValidatePluginMemoryRoutines(
+    const TF_FilesystemPluginInfo* info) {
   if (info->plugin_memory_allocate == nullptr)
-    return errors::FailedPrecondition("Cannot load filesystem plugin which does not provide `plugin_memory_allocate`");
+    return errors::FailedPrecondition(
+        "Cannot load filesystem plugin which does not provide "
+        "`plugin_memory_allocate`");
 
   if (info->plugin_memory_free == nullptr)
-    return errors::FailedPrecondition("Cannot load filesystem plugin which does not provide `plugin_memory_free`");
+    return errors::FailedPrecondition(
+        "Cannot load filesystem plugin which does not provide "
+        "`plugin_memory_free`");
 
   return Status::OK();
 }
@@ -297,7 +318,8 @@ Status RegisterFilesystemPluginImpl(const std::string& dso_path) {
   // Step 3: Call `TF_InitPlugin`
   TF_FilesystemPluginInfo info;
   memset(&info, 0, sizeof(info));
-  auto TF_InitPlugin = reinterpret_cast<int(*)(TF_FilesystemPluginInfo*)>(dso_symbol);
+  auto TF_InitPlugin =
+      reinterpret_cast<int (*)(TF_FilesystemPluginInfo*)>(dso_symbol);
   TF_InitPlugin(&info);
 
   // Step 4: Ensure plugin provides the memory management functions.

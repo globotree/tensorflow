@@ -753,8 +753,11 @@ constexpr size_t TF_FILESYSTEM_OPS_SIZE = sizeof(TF_FilesystemOps);
 ///   * `TF_InitPlugin` function: must be present in the plugin shared object as
 ///     it will be called by core TensorFlow when the filesystem plugin is
 ///     loaded;
-///   * `TF_FilesystemPluginInfo` struct: used to transfer information between
+///   * `TF_FilesystemPluginOps` struct: used to transfer information between
 ///     plugins and core TensorFlow about the operations provided and metadata;
+///   * `TF_FilesystemPluginInfo` struct: similar to the above structure, but
+///     collects information about all the file schemes that the plugin provides
+///     support for, as well as about the plugin's memory handling routines;
 ///   * `TF_SetFilesystemVersionMetadata` function: must be called by plugins in
 ///     their `TF_InitPlugin` to record the versioning information the plugins
 ///     are compiled against.
@@ -824,7 +827,7 @@ typedef struct TF_FilesystemPluginOps {
 /// provided, add them at the end of the structure.
 typedef struct TF_FilesystemPluginInfo {
   size_t num_schemes;
-  TF_FilesystemPluginOps *ops;
+  TF_FilesystemPluginOps* ops;
   void* (*plugin_memory_allocate)(size_t size);
   void (*plugin_memory_free)(void* ptr);
 } TF_FilesystemPluginInfo;
@@ -835,19 +838,20 @@ typedef struct TF_FilesystemPluginInfo {
 ///
 /// We want this to be defined in the plugin's memory space and we guarantee
 /// that core TensorFlow will never call this.
-static inline void TF_SetFilesystemVersionMetadata(TF_FilesystemPluginOps* po) {
-  po->filesystem_ops_abi = TF_FILESYSTEM_OPS_ABI;
-  po->filesystem_ops_api = TF_FILESYSTEM_OPS_API;
-  po->filesystem_ops_size = TF_FILESYSTEM_OPS_SIZE;
-  po->random_access_file_ops_abi = TF_RANDOM_ACCESS_FILE_OPS_ABI;
-  po->random_access_file_ops_api = TF_RANDOM_ACCESS_FILE_OPS_API;
-  po->random_access_file_ops_size = TF_RANDOM_ACCESS_FILE_OPS_SIZE;
-  po->writable_file_ops_abi = TF_WRITABLE_FILE_OPS_ABI;
-  po->writable_file_ops_api = TF_WRITABLE_FILE_OPS_API;
-  po->writable_file_ops_size = TF_WRITABLE_FILE_OPS_SIZE;
-  po->read_only_memory_region_ops_abi = TF_READ_ONLY_MEMORY_REGION_OPS_ABI;
-  po->read_only_memory_region_ops_api = TF_READ_ONLY_MEMORY_REGION_OPS_API;
-  po->read_only_memory_region_ops_size = TF_READ_ONLY_MEMORY_REGION_OPS_SIZE;
+static inline void TF_SetFilesystemVersionMetadata(
+    TF_FilesystemPluginOps* ops) {
+  ops->filesystem_ops_abi = TF_FILESYSTEM_OPS_ABI;
+  ops->filesystem_ops_api = TF_FILESYSTEM_OPS_API;
+  ops->filesystem_ops_size = TF_FILESYSTEM_OPS_SIZE;
+  ops->random_access_file_ops_abi = TF_RANDOM_ACCESS_FILE_OPS_ABI;
+  ops->random_access_file_ops_api = TF_RANDOM_ACCESS_FILE_OPS_API;
+  ops->random_access_file_ops_size = TF_RANDOM_ACCESS_FILE_OPS_SIZE;
+  ops->writable_file_ops_abi = TF_WRITABLE_FILE_OPS_ABI;
+  ops->writable_file_ops_api = TF_WRITABLE_FILE_OPS_API;
+  ops->writable_file_ops_size = TF_WRITABLE_FILE_OPS_SIZE;
+  ops->read_only_memory_region_ops_abi = TF_READ_ONLY_MEMORY_REGION_OPS_ABI;
+  ops->read_only_memory_region_ops_api = TF_READ_ONLY_MEMORY_REGION_OPS_API;
+  ops->read_only_memory_region_ops_size = TF_READ_ONLY_MEMORY_REGION_OPS_SIZE;
 }
 
 /// Initializes a TensorFlow plugin.

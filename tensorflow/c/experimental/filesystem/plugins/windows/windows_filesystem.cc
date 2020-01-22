@@ -21,6 +21,22 @@ limitations under the License.
 // Implementation of a filesystem for POSIX environments.
 // This filesystem will support `file://` and empty (local) URI schemes.
 
+static void* plugin_memory_allocate(size_t size) { return calloc(1, size); }
+static void plugin_memory_free(void* ptr) { free(ptr); }
+
+// If we directly use `strdup` to create a `char *` that is then sent to core
+// TensorFlow and then we change `plugin_memory_allocate`/`plugin_memory_free`
+// functions, we will have issues as allocation/deallocation for this string
+// won't match anymore. Hence, we define a local helper to use instead.
+//
+// Assumes it is called only with null-terminated strings.
+static char* plugin_strdup(const char* src) {
+  size_t n = strlen(src) + 1;
+  void* ret = plugin_memory_allocate(n * sizeof(*src));
+  memcpy(ret, src, n);
+  return static_cast<char*>(ret);
+}
+
 // SECTION 1. Implementation for `TF_RandomAccessFile`
 // ----------------------------------------------------------------------------
 namespace tf_random_access_file {
@@ -57,23 +73,23 @@ static void Cleanup(TF_Filesystem* filesystem) {}
 
 }  // namespace tf_windows_filesystem
 
-int TF_InitPlugin(void* (*allocator)(size_t), TF_FilesystemPluginInfo** info) {
-  const int num_schemes = 2;
-  *info = static_cast<TF_FilesystemPluginInfo*>(
-      allocator(num_schemes * sizeof((*info)[0])));
+static void ProvideFilesystemSupportFor(TF_FilesystemPluginOps* ops,
+                                        const char* uri) {
+  TF_SetFilesystemVersionMetadata(ops);
+  ops->scheme = plugin_strdup(uri);
 
-  for (int i = 0; i < num_schemes; i++) {
-    TF_FilesystemPluginInfo* current_info = &((*info)[i]);
-    TF_SetFilesystemVersionMetadata(current_info);
+  ops->filesystem_ops = static_cast<TF_FilesystemOps*>(
+      plugin_memory_allocate(TF_FILESYSTEM_OPS_SIZE));
+  ops->filesystem_ops->init = tf_windows_filesystem::Init;
+  ops->filesystem_ops->cleanup = tf_windows_filesystem::Cleanup;
+}
 
-    current_info->filesystem_ops =
-        static_cast<TF_FilesystemOps*>(allocator(TF_FILESYSTEM_OPS_SIZE));
-    current_info->filesystem_ops->init = tf_windows_filesystem::Init;
-    current_info->filesystem_ops->cleanup = tf_windows_filesystem::Cleanup;
-  }
-
-  (*info)[0].scheme = strdup("");
-  (*info)[1].scheme = strdup("file");
-
-  return num_schemes;
+void TF_InitPlugin(TF_FilesystemPluginInfo* info) {
+  info->plugin_memory_allocate = plugin_memory_allocate;
+  info->plugin_memory_free = plugin_memory_free;
+  info->num_schemes = 2;
+  info->ops = static_cast<TF_FilesystemPluginOps*>(
+      plugin_memory_allocate(info->num_schemes * sizeof(info->ops[0])));
+  ProvideFilesystemSupportFor(&info->ops[0], "");
+  ProvideFilesystemSupportFor(&info->ops[1], "file");
 }

@@ -45,7 +45,8 @@ class ModularFileSystem final : public FileSystem {
       std::unique_ptr<const TF_FilesystemOps> filesystem_ops,
       std::unique_ptr<const TF_RandomAccessFileOps> random_access_file_ops,
       std::unique_ptr<const TF_WritableFileOps> writable_file_ops,
-      std::unique_ptr<const TF_ReadOnlyMemoryRegionOps> read_only_memory_region_ops,
+      std::unique_ptr<const TF_ReadOnlyMemoryRegionOps>
+          read_only_memory_region_ops,
       std::function<void*(size_t)> plugin_memory_allocate,
       std::function<void(void*)> plugin_memory_free)
       : filesystem_(std::move(filesystem)),
@@ -53,8 +54,8 @@ class ModularFileSystem final : public FileSystem {
         random_access_file_ops_(std::move(random_access_file_ops)),
         writable_file_ops_(std::move(writable_file_ops)),
         read_only_memory_region_ops_(std::move(read_only_memory_region_ops)),
-        plugin_memory_allocate_(plugin_memory_allocate),
-        plugin_memory_free_(plugin_memory_free) {}
+        plugin_memory_allocate_(std::move(plugin_memory_allocate)),
+        plugin_memory_free_(std::move(plugin_memory_free)) {}
 
   ~ModularFileSystem() override { ops_->cleanup(filesystem_.get()); }
 
