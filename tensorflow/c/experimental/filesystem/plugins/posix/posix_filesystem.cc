@@ -31,6 +31,22 @@ limitations under the License.
 // Implementation of a filesystem for POSIX environments.
 // This filesystem will support `file://` and empty (local) URI schemes.
 
+static void* plugin_memory_allocate(size_t size) { return calloc(1, size); }
+static void plugin_memory_free(void *ptr) { free(ptr); }
+
+// If we directly use `strdup` to create a `char *` that is then sent to core
+// TensorFlow and then we change `plugin_memory_allocate`/`plugin_memory_free`
+// functions, we will have issues as allocation/deallocation for this string
+// won't match anymore. Hence, we define a local helper to use instead.
+//
+// Assumes it is called only with null-terminated strings.
+static char* plugin_strdup(const char* src) {
+  size_t n = strlen(src) + 1;
+  void* ret = plugin_memory_allocate(n * sizeof(*src));
+  memcpy(ret, src, n);
+  return static_cast<char*>(ret);
+}
+
 // SECTION 1. Implementation for `TF_RandomAccessFile`
 // ----------------------------------------------------------------------------
 namespace tf_random_access_file {
@@ -43,7 +59,9 @@ typedef struct PosixFile {
 static void Cleanup(TF_RandomAccessFile* file) {
   auto posix_file = static_cast<PosixFile*>(file->plugin_file);
   close(posix_file->fd);
-  free(const_cast<char*>(posix_file->filename));
+  // This would be safe to free using `free` directly as it is only opaque.
+  // However, it is better to be consistent everywhere.
+  plugin_memory_free(const_cast<char*>(posix_file->filename));
   delete posix_file;
 }
 
@@ -98,7 +116,7 @@ typedef struct PosixFile {
 
 static void Cleanup(TF_WritableFile* file) {
   auto posix_file = static_cast<PosixFile*>(file->plugin_file);
-  free(const_cast<char*>(posix_file->filename));
+  plugin_memory_free(const_cast<char*>(posix_file->filename));
   delete posix_file;
 }
 
@@ -205,7 +223,7 @@ static void NewRandomAccessFile(const TF_Filesystem* filesystem,
     return;
   }
 
-  file->plugin_file = new tf_random_access_file::PosixFile({strdup(path), fd});
+  file->plugin_file = new tf_random_access_file::PosixFile({plugin_strdup(path), fd});
   TF_SetStatus(status, TF_OK, "");
 }
 
@@ -217,7 +235,7 @@ static void NewWritableFile(const TF_Filesystem* filesystem, const char* path,
     return;
   }
 
-  file->plugin_file = new tf_writable_file::PosixFile({strdup(path), f});
+  file->plugin_file = new tf_writable_file::PosixFile({plugin_strdup(path), f});
   TF_SetStatus(status, TF_OK, "");
 }
 
@@ -229,7 +247,7 @@ static void NewAppendableFile(const TF_Filesystem* filesystem, const char* path,
     return;
   }
 
-  file->plugin_file = new tf_writable_file::PosixFile({strdup(path), f});
+  file->plugin_file = new tf_writable_file::PosixFile({plugin_strdup(path), f});
   TF_SetStatus(status, TF_OK, "");
 }
 
@@ -381,12 +399,12 @@ static int GetChildren(const TF_Filesystem* filesystem, const char* path,
   if (num_entries < 0) {
     TF_SetStatusFromIOError(status, errno, path);
   } else {
-    *entries = static_cast<char**>(calloc(num_entries, sizeof((*entries)[0])));
+    *entries = static_cast<char**>(plugin_memory_allocate(num_entries * sizeof((*entries)[0])));
     for (int i = 0; i < num_entries; i++) {
-      (*entries)[i] = strdup(dir_entries[i]->d_name);
-      free(dir_entries[i]);
+      (*entries)[i] = plugin_strdup(dir_entries[i]->d_name);
+      plugin_memory_free(dir_entries[i]);
     }
-    free(dir_entries);
+    plugin_memory_free(dir_entries);
   }
 
   return num_entries;
@@ -394,65 +412,49 @@ static int GetChildren(const TF_Filesystem* filesystem, const char* path,
 
 }  // namespace tf_posix_filesystem
 
-int TF_InitPlugin(void* (*allocator)(size_t), TF_FilesystemPluginInfo** info) {
-  const int num_schemes = 2;
-  *info = static_cast<TF_FilesystemPluginInfo*>(
-      allocator(num_schemes * sizeof((*info)[0])));
+static void ProvideFilesystemSupportFor(TF_FilesystemPluginOps *ops, const char *uri) {
+  TF_SetFilesystemVersionMetadata(ops);
+  ops->scheme = plugin_strdup(uri);
 
-  for (int i = 0; i < num_schemes; i++) {
-    TF_FilesystemPluginInfo* current_info = &((*info)[i]);
-    TF_SetFilesystemVersionMetadata(current_info);
+  ops->random_access_file_ops = static_cast<TF_RandomAccessFileOps*>(plugin_memory_allocate(TF_RANDOM_ACCESS_FILE_OPS_SIZE));
+  ops->random_access_file_ops->cleanup = tf_random_access_file::Cleanup;
+  ops->random_access_file_ops->read = tf_random_access_file::Read;
 
-    current_info->random_access_file_ops = static_cast<TF_RandomAccessFileOps*>(
-        allocator(TF_RANDOM_ACCESS_FILE_OPS_SIZE));
-    current_info->random_access_file_ops->cleanup =
-        tf_random_access_file::Cleanup;
-    current_info->random_access_file_ops->read = tf_random_access_file::Read;
+  ops->writable_file_ops = static_cast<TF_WritableFileOps*>(plugin_memory_allocate(TF_WRITABLE_FILE_OPS_SIZE));
+  ops->writable_file_ops->cleanup = tf_writable_file::Cleanup;
+  ops->writable_file_ops->append = tf_writable_file::Append;
+  ops->writable_file_ops->tell = tf_writable_file::Tell;
+  ops->writable_file_ops->flush = tf_writable_file::Flush;
+  ops->writable_file_ops->sync = tf_writable_file::Sync;
+  ops->writable_file_ops->close = tf_writable_file::Close;
 
-    current_info->writable_file_ops =
-        static_cast<TF_WritableFileOps*>(allocator(TF_WRITABLE_FILE_OPS_SIZE));
-    current_info->writable_file_ops->cleanup = tf_writable_file::Cleanup;
-    current_info->writable_file_ops->append = tf_writable_file::Append;
-    current_info->writable_file_ops->tell = tf_writable_file::Tell;
-    current_info->writable_file_ops->flush = tf_writable_file::Flush;
-    current_info->writable_file_ops->sync = tf_writable_file::Sync;
-    current_info->writable_file_ops->close = tf_writable_file::Close;
+  ops->read_only_memory_region_ops = static_cast<TF_ReadOnlyMemoryRegionOps*>(plugin_memory_allocate(TF_READ_ONLY_MEMORY_REGION_OPS_SIZE));
+  ops->read_only_memory_region_ops->cleanup = tf_read_only_memory_region::Cleanup;
+  ops->read_only_memory_region_ops->data = tf_read_only_memory_region::Data;
+  ops->read_only_memory_region_ops->length = tf_read_only_memory_region::Length;
 
-    current_info->read_only_memory_region_ops =
-        static_cast<TF_ReadOnlyMemoryRegionOps*>(
-            allocator(TF_READ_ONLY_MEMORY_REGION_OPS_SIZE));
-    current_info->read_only_memory_region_ops->cleanup =
-        tf_read_only_memory_region::Cleanup;
-    current_info->read_only_memory_region_ops->data =
-        tf_read_only_memory_region::Data;
-    current_info->read_only_memory_region_ops->length =
-        tf_read_only_memory_region::Length;
+  ops->filesystem_ops = static_cast<TF_FilesystemOps*>(plugin_memory_allocate(TF_FILESYSTEM_OPS_SIZE));
+  ops->filesystem_ops->init = tf_posix_filesystem::Init;
+  ops->filesystem_ops->cleanup = tf_posix_filesystem::Cleanup;
+  ops->filesystem_ops->new_random_access_file = tf_posix_filesystem::NewRandomAccessFile;
+  ops->filesystem_ops->new_writable_file = tf_posix_filesystem::NewWritableFile;
+  ops->filesystem_ops->new_appendable_file = tf_posix_filesystem::NewAppendableFile;
+  ops->filesystem_ops->new_read_only_memory_region_from_file = tf_posix_filesystem::NewReadOnlyMemoryRegionFromFile;
+  ops->filesystem_ops->create_dir = tf_posix_filesystem::CreateDir;
+  ops->filesystem_ops->delete_file = tf_posix_filesystem::DeleteFile;
+  ops->filesystem_ops->delete_dir = tf_posix_filesystem::DeleteDir;
+  ops->filesystem_ops->rename_file = tf_posix_filesystem::RenameFile;
+  ops->filesystem_ops->copy_file = tf_posix_filesystem::CopyFile;
+  ops->filesystem_ops->path_exists = tf_posix_filesystem::PathExists;
+  ops->filesystem_ops->stat = tf_posix_filesystem::Stat;
+  ops->filesystem_ops->get_children = tf_posix_filesystem::GetChildren;
+}
 
-    current_info->filesystem_ops =
-        static_cast<TF_FilesystemOps*>(allocator(TF_FILESYSTEM_OPS_SIZE));
-    current_info->filesystem_ops->init = tf_posix_filesystem::Init;
-    current_info->filesystem_ops->cleanup = tf_posix_filesystem::Cleanup;
-    current_info->filesystem_ops->new_random_access_file =
-        tf_posix_filesystem::NewRandomAccessFile;
-    current_info->filesystem_ops->new_writable_file =
-        tf_posix_filesystem::NewWritableFile;
-    current_info->filesystem_ops->new_appendable_file =
-        tf_posix_filesystem::NewAppendableFile;
-    current_info->filesystem_ops->new_read_only_memory_region_from_file =
-        tf_posix_filesystem::NewReadOnlyMemoryRegionFromFile;
-    current_info->filesystem_ops->create_dir = tf_posix_filesystem::CreateDir;
-    current_info->filesystem_ops->delete_file = tf_posix_filesystem::DeleteFile;
-    current_info->filesystem_ops->delete_dir = tf_posix_filesystem::DeleteDir;
-    current_info->filesystem_ops->rename_file = tf_posix_filesystem::RenameFile;
-    current_info->filesystem_ops->copy_file = tf_posix_filesystem::CopyFile;
-    current_info->filesystem_ops->path_exists = tf_posix_filesystem::PathExists;
-    current_info->filesystem_ops->stat = tf_posix_filesystem::Stat;
-    current_info->filesystem_ops->get_children =
-        tf_posix_filesystem::GetChildren;
-  }
-
-  (*info)[0].scheme = strdup("");
-  (*info)[1].scheme = strdup("file");
-
-  return num_schemes;
+void TF_InitPlugin(TF_FilesystemPluginInfo* info) {
+  info->plugin_memory_allocate = plugin_memory_allocate;
+  info->plugin_memory_free = plugin_memory_free;
+  info->num_schemes = 2;
+  info->ops = static_cast<TF_FilesystemPluginOps*>(plugin_memory_allocate(info->num_schemes * sizeof(info->ops[0])));
+  ProvideFilesystemSupportFor(&info->ops[0], "");
+  ProvideFilesystemSupportFor(&info->ops[1], "file");
 }
